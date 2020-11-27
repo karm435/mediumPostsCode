@@ -1,0 +1,119 @@
+# name is used for build version
+name: $(build_version)
+
+trigger:
+  branches:
+    include:
+      - master
+
+  paths:
+    include:
+      - azure-pipeline/*
+
+variables:
+  vmImageName: 'macos-latest'
+  buildNumber: '$(Build.BuildNumber)'
+  stagingArtifact: 'stagingapks'
+  stagingiOSArtifact: 'iOSTodoStaging'
+  isMain: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
+
+stages:
+  - stage: Build
+    displayName: Build Staging
+    jobs:
+      - job: StagingBuild_Android
+        displayName: Build Staging app
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: replacetokens@3
+            inputs:
+              rootDirectory: './src/environments/'
+              targetFiles: '**/*.staging.ts'
+              encoding: 'auto'
+              writeBOM: true
+              actionOnMissing: 'warn'
+              keepToken: false
+              tokenPrefix: '#{'
+              tokenSuffix: '}#'
+            displayName: "Replace environment variables"
+
+          - template: android-build.yml
+            parameters:
+              keystoreFileName: 'TodoAppStagingKeystore.jks'
+              keystorePassword: $(keystore.password)
+              keyAlias: $(key.alias)
+              keyPassword: $(key.password)
+              artifactName: $(stagingArtifact)
+              environment: "staging"
+              gradletasks: 'assembleStaging'
+              buildType: 'staging'
+              googleServiceFilePath: 'google-services.json'
+
+      - job: StagingBuild_iOS
+        displayName: Staging iOS Build
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: replacetokens@3
+            inputs:
+              rootDirectory: './src/environments/'
+              targetFiles: '**/*.staging.ts'
+              encoding: 'auto'
+              writeBOM: true
+              actionOnMissing: 'warn'
+              keepToken: false
+              tokenPrefix: '#{'
+              tokenSuffix: '}#'
+            displayName: "Replace environment variables"
+
+          - template: ios-build.yml
+            parameters:
+              provisioningProfileName: $(Staging_ProvProfileName)
+              provisioningProfileFilePath: 'Staging_ios_Profile.mobileprovision'
+              certificateSecureFileName: 'Staging_iOS_certificates.p12'
+              certificatePassword: $(staging_ios_certificate_password)
+              appDisplayName: '$(Staging_iOS_DisplayName)'
+              appBundleId: $(Staging_iOS_AppBundleID)
+              developmentTeamId: $(Staging_iOS_DevelopmentTeamId)
+              artifactName: $(stagingiOSArtifact)
+              environment: "staging"
+              firebasePlistFilePath: "Staging_GoogleService-Info.plist"
+
+  - stage: Deploy_Staging
+    displayName: Staging Deploy
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables.isMain, true))
+    jobs:
+      - deployment: Deploy_Android_Staging
+        displayName: Deploy to Android Staging
+        pool:
+          vmImage: $(vmImageName)
+        environment: Staging
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: android-deploy.yml
+                  parameters:
+                    appCenterServiceConnection: 'Todo-Android.Staging.Full'
+                    appSlug: 'OrgName/Todo-Android.Staging'
+                    appFile: '$(Pipeline.Workspace)/$(stagingArtifact)/TodoApp.release.apk'
+                    releaseNotes: 'Deploy to staging'
+                    distributionGroupId: $(android_staging_distributionIds)
+                    artifactName: $(stagingArtifact)
+
+      - deployment: Deploy_iOS_Staging
+        displayName: Deploy to iOS Staging
+        pool:
+          vmImage: $(vmImageName)
+        environment: Staging
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: ios-deploy.yml
+                  parameters:
+                    serverEndpoint: "Todo IOS Staging App Store"
+                    appIdentifier: $(staging_ios_appIdentifier)
+                    artifactName: $(stagingiOSArtifact)
